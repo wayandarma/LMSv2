@@ -1,8 +1,8 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// =============================================================================
+// E-COURSE PLATFORM — PRISMA SCHEMA
+// Stack: PostgreSQL + Prisma ORM
+// Auth: Clerk | Payments: Stripe | Video: Mux
+// =============================================================================
 
 generator client {
   provider = "prisma-client"
@@ -11,4 +11,564 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  DELETED
+}
+
+enum RoleCode {
+  SUPER_ADMIN
+  ADMIN
+  COURSE_MANAGER
+  SUPPORT
+  INSTRUCTOR
+  STUDENT
+}
+
+enum CourseStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum CourseVisibility {
+  PUBLIC
+  PRIVATE
+  HIDDEN
+}
+
+enum LessonType {
+  VIDEO
+  TEXT
+  FILE
+  QUIZ
+  LIVE
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  COMPLETED
+  REVOKED
+  REFUNDED
+  EXPIRED
+}
+
+enum ProgressStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum CouponType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  PROCESSED
+}
+
+enum NotificationType {
+  SYSTEM
+  ORDER
+  ENROLLMENT
+  COURSE
+  CERTIFICATE
+}
+
+// =============================================================================
+// IDENTITY AND ACCESS
+// =============================================================================
+
+/// Application-level user record.
+/// Authentication is handled by Clerk — this stores the app identity.
+/// Never hard-delete a user who has orders or enrollments.
+/// Use status-based deactivation instead.
+model User {
+  id          String     @id @default(uuid())
+  clerkUserId String     @unique
+  email       String     @unique
+  fullName    String
+  avatarUrl   String?
+  status      UserStatus @default(ACTIVE)
+  lastLoginAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  // Relations
+  roles             UserRole[]
+  orders            Order[]
+  enrollments       Enrollment[]
+  instructorCourses CourseInstructor[]
+  adminNotes        AdminNote[]        @relation("AdminNoteSubject")
+  authoredNotes     AdminNote[]        @relation("AdminNoteAuthor")
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+  subscriptions     Subscription[]
+  refundsRequested  Refund[]
+  couponRedemptions CouponRedemption[]
+}
+
+/// Defines the available application roles.
+model Role {
+  id          String   @id @default(uuid())
+  code        RoleCode @unique
+  label       String
+  description String?
+
+  // Relations
+  userRoles UserRole[]
+}
+
+/// Join table for User <-> Role (many-to-many).
+model UserRole {
+  id         String   @id @default(uuid())
+  userId     String
+  roleId     String
+  assignedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+  role Role @relation(fields: [roleId], references: [id])
+
+  @@unique([userId, roleId])
+}
+
+// =============================================================================
+// COURSE CONTENT
+// =============================================================================
+
+/// Optional grouping for courses.
+model CourseCategory {
+  id          String   @id @default(uuid())
+  slug        String   @unique
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+
+  // Relations
+  courses Course[]
+}
+
+/// A course the company sells.
+/// Never hard-delete a course with orders or enrollments — use ARCHIVED status.
+model Course {
+  id                       String           @id @default(uuid())
+  slug                     String           @unique
+  title                    String
+  subtitle                 String?
+  shortDescription         String?
+  description              String?
+  thumbnailUrl             String?
+  status                   CourseStatus     @default(DRAFT)
+  visibility               CourseVisibility @default(PUBLIC)
+  estimatedDurationMinutes Int?
+  categoryId               String?
+  productId                String?
+  hasCertificate           Boolean          @default(false)
+  publishedAt              DateTime?
+  archivedAt               DateTime?
+  createdAt                DateTime         @default(now())
+  updatedAt                DateTime         @updatedAt
+
+  // Relations
+  category    CourseCategory?    @relation(fields: [categoryId], references: [id])
+  product     Product?           @relation(fields: [productId], references: [id])
+  sections    CourseSection[]
+  instructors CourseInstructor[]
+  enrollments Enrollment[]
+  orderItems  OrderItem[]
+  lessons     Lesson[]
+
+  @@index([status])
+  @@index([categoryId])
+}
+
+/// Mapping table for courses and their instructors.
+model CourseInstructor {
+  id       String @id @default(uuid())
+  courseId String
+  userId   String
+  position Int    @default(0)
+
+  course Course @relation(fields: [courseId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([courseId, userId])
+}
+
+/// Logical grouping of lessons inside a course.
+model CourseSection {
+  id          String   @id @default(uuid())
+  courseId    String
+  title       String
+  description String?
+  position    Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  course  Course   @relation(fields: [courseId], references: [id])
+  lessons Lesson[]
+
+  @@unique([courseId, position])
+}
+
+/// A single lesson inside a course section.
+/// courseId is intentionally duplicated here for easier querying.
+/// App logic must ensure lesson.courseId matches section.courseId.
+model Lesson {
+  id              String     @id @default(uuid())
+  courseId        String
+  sectionId       String
+  slug            String
+  title           String
+  description     String?
+  lessonType      LessonType
+  contentHtml     String?
+  muxAssetId      String?
+  muxPlaybackId   String?
+  durationSeconds Int?
+  isPreview       Boolean    @default(false)
+  isPublished     Boolean    @default(false)
+  position        Int
+  publishedAt     DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  course   Course           @relation(fields: [courseId], references: [id])
+  section  CourseSection    @relation(fields: [sectionId], references: [id])
+  assets   LessonAsset[]
+  progress LessonProgress[]
+
+  @@unique([courseId, slug])
+  @@unique([sectionId, position])
+  @@index([courseId])
+  @@index([sectionId])
+  @@index([isPublished])
+}
+
+/// Downloadable resources attached to a lesson.
+model LessonAsset {
+  id            String   @id @default(uuid())
+  lessonId      String
+  label         String
+  fileUrl       String
+  fileType      String?
+  fileSizeBytes BigInt?
+  position      Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  lesson Lesson @relation(fields: [lessonId], references: [id])
+}
+
+// =============================================================================
+// COMMERCE
+// =============================================================================
+
+/// A sellable business object — separates commercial setup from course metadata.
+/// In MVP, one course maps to one product.
+/// Keeping Product separate makes future bundles straightforward.
+model Product {
+  id              String   @id @default(uuid())
+  code            String   @unique
+  name            String
+  description     String?
+  isActive        Boolean  @default(true)
+  stripeProductId String?  @unique
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  prices     Price[]
+  courses    Course[]
+  orderItems OrderItem[]
+}
+
+/// A product price. Supports one-time and future recurring billing.
+model Price {
+  id              String   @id @default(uuid())
+  productId       String
+  stripePriceId   String?  @unique
+  currency        String
+  unitAmount      Int
+  isActive        Boolean  @default(true)
+  billingInterval String? // null = one-time; "month" / "year" = recurring
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  product       Product        @relation(fields: [productId], references: [id])
+  orderItems    OrderItem[]
+  subscriptions Subscription[]
+}
+
+/// An order created when a user initiates or completes checkout.
+/// Never delete orders — use status transitions instead.
+model Order {
+  id                      String      @id @default(uuid())
+  userId                  String
+  stripeCheckoutSessionId String?     @unique
+  stripePaymentIntentId   String?     @unique
+  status                  OrderStatus @default(PENDING)
+  currency                String
+  subtotalAmount          Int
+  discountAmount          Int         @default(0)
+  taxAmount               Int         @default(0)
+  totalAmount             Int
+  couponId                String?
+  paidAt                  DateTime?
+  createdAt               DateTime    @default(now())
+  updatedAt               DateTime    @updatedAt
+
+  user              User               @relation(fields: [userId], references: [id])
+  coupon            Coupon?            @relation(fields: [couponId], references: [id])
+  items             OrderItem[]
+  refunds           Refund[]
+  couponRedemptions CouponRedemption[]
+  enrollments       Enrollment[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// The individual items inside an order.
+/// In MVP, quantity is typically 1. Kept separate for future bundle support.
+model OrderItem {
+  id          String   @id @default(uuid())
+  orderId     String
+  productId   String
+  courseId    String?
+  priceId     String?
+  quantity    Int      @default(1)
+  unitAmount  Int
+  totalAmount Int
+  createdAt   DateTime @default(now())
+
+  order   Order   @relation(fields: [orderId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+  course  Course? @relation(fields: [courseId], references: [id])
+  price   Price?  @relation(fields: [priceId], references: [id])
+}
+
+/// A discount code that can be applied at checkout.
+model Coupon {
+  id             String     @id @default(uuid())
+  code           String     @unique
+  type           CouponType
+  amount         Int
+  maxRedemptions Int?
+  redeemedCount  Int        @default(0)
+  startsAt       DateTime?
+  expiresAt      DateTime?
+  isActive       Boolean    @default(true)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  orders      Order[]
+  redemptions CouponRedemption[]
+
+  @@index([isActive])
+  @@index([expiresAt])
+}
+
+/// Tracks actual coupon usage — source of truth for coupon history.
+/// redeemedCount on Coupon is a cached counter; this table is the real record.
+model CouponRedemption {
+  id         String   @id @default(uuid())
+  couponId   String
+  userId     String
+  orderId    String
+  redeemedAt DateTime @default(now())
+
+  coupon Coupon @relation(fields: [couponId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+  order  Order  @relation(fields: [orderId], references: [id])
+
+  @@unique([couponId, orderId])
+}
+
+/// Refund requests and completed refund records.
+/// Do not delete — preserves financial history.
+model Refund {
+  id                String       @id @default(uuid())
+  orderId           String
+  amount            Int
+  reason            String?
+  status            RefundStatus
+  requestedByUserId String?
+  processedAt       DateTime?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  order           Order @relation(fields: [orderId], references: [id])
+  requestedByUser User? @relation(fields: [requestedByUserId], references: [id])
+}
+
+/// Optional: subscription record for future recurring billing support.
+/// Excluded from MVP migration if not needed yet.
+model Subscription {
+  id                   String    @id @default(uuid())
+  userId               String
+  stripeSubscriptionId String?   @unique
+  priceId              String?
+  status               String
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean   @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  user  User   @relation(fields: [userId], references: [id])
+  price Price? @relation(fields: [priceId], references: [id])
+}
+
+// =============================================================================
+// LEARNING AND ACCESS
+// =============================================================================
+
+/// Records that a user has access to a course.
+/// One active enrollment per user per course.
+/// Do not delete — use status transitions instead.
+model Enrollment {
+  id              String           @id @default(uuid())
+  userId          String
+  courseId        String
+  orderId         String?
+  status          EnrollmentStatus @default(ACTIVE)
+  enrolledAt      DateTime         @default(now())
+  completedAt     DateTime?
+  expiresAt       DateTime?
+  accessRevokedAt DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  user           User             @relation(fields: [userId], references: [id])
+  course         Course           @relation(fields: [courseId], references: [id])
+  order          Order?           @relation(fields: [orderId], references: [id])
+  lessonProgress LessonProgress[]
+  courseProgress CourseProgress?
+  certificate    Certificate?
+
+  @@unique([userId, courseId])
+  @@index([userId])
+  @@index([courseId])
+  @@index([status])
+}
+
+/// Lesson-level progress record for a student enrollment.
+/// App logic must ensure the lesson belongs to the same course as the enrollment.
+model LessonProgress {
+  id              String         @id @default(uuid())
+  enrollmentId    String
+  lessonId        String
+  status          ProgressStatus @default(NOT_STARTED)
+  progressPercent Int            @default(0)
+  watchedSeconds  Int            @default(0)
+  lastViewedAt    DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
+  lesson     Lesson     @relation(fields: [lessonId], references: [id])
+
+  @@unique([enrollmentId, lessonId])
+  @@index([status])
+  @@index([lastViewedAt])
+}
+
+/// Cached aggregate progress per enrollment.
+/// Source of truth is still LessonProgress — this is for fast reads.
+model CourseProgress {
+  id               String    @id @default(uuid())
+  enrollmentId     String    @unique
+  completedLessons Int       @default(0)
+  totalLessons     Int       @default(0)
+  progressPercent  Int       @default(0)
+  lastActivityAt   DateTime?
+  updatedAt        DateTime  @updatedAt
+
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
+
+  @@index([progressPercent])
+}
+
+/// Completion certificate. One per enrollment maximum.
+/// Only issued after completion requirements are met.
+model Certificate {
+  id                String   @id @default(uuid())
+  enrollmentId      String   @unique
+  certificateNumber String   @unique
+  verificationCode  String   @unique
+  pdfUrl            String?
+  issuedAt          DateTime
+  createdAt         DateTime @default(now())
+
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id])
+}
+
+// =============================================================================
+// OPERATIONS
+// =============================================================================
+
+/// Internal notes written by admins about a user.
+model AdminNote {
+  id           String   @id @default(uuid())
+  userId       String
+  authorUserId String
+  note         String
+  createdAt    DateTime @default(now())
+
+  user   User @relation("AdminNoteSubject", fields: [userId], references: [id])
+  author User @relation("AdminNoteAuthor", fields: [authorUserId], references: [id])
+}
+
+/// In-app or lifecycle notifications for users.
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+/// Audit trail for sensitive actions.
+/// actorUserId is nullable to support system-generated events.
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorUserId  String?
+  entityType   String
+  entityId     String
+  action       String
+  metadataJson Json?
+  createdAt    DateTime @default(now())
+
+  actor User? @relation(fields: [actorUserId], references: [id])
+
+  @@index([actorUserId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
 }
